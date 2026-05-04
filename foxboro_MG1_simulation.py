@@ -22,9 +22,12 @@ ARRIVAL_SIGMA     = 50     # spread (std dev) of the arrival surge in minutes
 ARRIVAL_QUIET_PERIOD  = 5      # minutes of near-zero arrivals right after whistle
 
 # N(t) dispatch policy
-NT_CAPACITY_THRESHOLD = 1400   # send a train if queue >= this many passengers
-NT_WAIT_THRESHOLD     = 90     # send a train if oldest passenger has waited >= this many minutes
-NT_MIN_HEADWAY        = 8      # minimum minutes between consecutive dispatches
+NT_CAPACITY_THRESHOLD = 1440   # send a train if queue >= this many passengers
+NT_WAIT_THRESHOLD     = 30     # send a train if oldest passenger has waited >= this many minutes
+NT_MIN_HEADWAY        = 2      # minimum minutes between consecutive dispatches
+
+# Fixed-headway reference (original plan)
+FIXED_HEADWAY         = 15     # minutes between trains in original plan
 
 # Simulation / plot
 RANDOM_SEED           = 42
@@ -34,7 +37,8 @@ OUTPUT_QUEUE_DEPTH    = "foxboro_queue_depth.png"
 
 # Colors
 COLOR_ARRIVAL         = "#1a6bbd"
-COLOR_DEPARTURE       = "#2ca44e"
+COLOR_NT              = "#2ca44e"
+COLOR_FIXED           = "#d85a30"
 COLOR_TRAIN_LINE      = "#aaaaaa"
 
 # =============================================================================
@@ -49,23 +53,26 @@ T                = np.linspace(0, T_MAX, 4000)
 # SIMULATION
 # =============================================================================
 
-def simulate():
+def draw_arrivals():
+    """Draw one Poisson arrival trace, shared by both simulations."""
     rng       = np.random.default_rng(RANDOM_SEED)
     t_minutes = np.arange(0, T_MAX + 1, dtype=float)
-
-    # Poisson rate lambda(t): normal surge shape scaled to expected total
     raw_shape = norm.pdf(t_minutes, ARRIVAL_PEAK, ARRIVAL_SIGMA)
     lam_t     = raw_shape / raw_shape.sum() * TOTAL_PASSENGERS
+    arrivals  = rng.poisson(lam_t)
+    arrivals[:ARRIVAL_QUIET_PERIOD] = 0
+    return arrivals
 
-    arrivals_per_min = rng.poisson(lam_t)
-    arrivals_per_min[:ARRIVAL_QUIET_PERIOD] = 0
+def simulate_nt(arrivals_per_min):
+    """N(t) adaptive dispatch policy."""
+    t_minutes = np.arange(0, T_MAX + 1, dtype=float)
 
     queue             = 0
     oldest_wait       = 0
     total_boarded     = 0
     trains_dispatched = 0
     last_dispatch     = -999
-    dispatch_log      = []   # list of (minute, cumulative_boarded)
+    dispatch_log      = []
     cum_arr_sim       = np.zeros(len(t_minutes))
 
     for tick in range(len(t_minutes)):
@@ -90,7 +97,7 @@ def simulate():
             oldest_wait        = 0
             dispatch_log.append((tick, total_boarded))
 
-    # A(t): interpolate cumulative arrivals onto fine grid
+    # A(t): interpolate — arrivals accumulate continuously
     cum_arr = np.interp(T, t_minutes, cum_arr_sim)
 
     # D(t): true step function — no interpolation
@@ -101,6 +108,31 @@ def simulate():
     mean_wait = np.trapezoid(np.maximum(cum_arr - cum_dep, 0), T) / max(total_boarded, 1)
 
     return cum_arr, cum_dep, dispatch_log, mean_wait, trains_dispatched
+
+def simulate_fixed(arrivals_per_min):
+    """Fixed-headway reference: one train every FIXED_HEADWAY min from FIRST_DEPARTURE."""
+    t_minutes     = np.arange(0, T_MAX + 1, dtype=float)
+    fixed_departs = [FIRST_DEPARTURE + i * FIXED_HEADWAY for i in range(NUM_TRAINS)]
+    cum_arr_sim   = np.cumsum(arrivals_per_min).astype(float)
+
+    total_boarded = 0
+    dispatch_log  = []
+
+    for d_time in fixed_departs:
+        tick    = int(d_time)
+        arrived = cum_arr_sim[min(tick, len(cum_arr_sim) - 1)]
+        boarded = min(arrived - total_boarded, TRAIN_CAPACITY)
+        total_boarded += boarded
+        dispatch_log.append((d_time, total_boarded))
+
+    cum_dep = np.zeros(len(T))
+    for d_time, cum_b in dispatch_log:
+        cum_dep[T >= d_time] = cum_b
+
+    cum_arr   = np.interp(T, t_minutes, cum_arr_sim)
+    mean_wait = np.trapezoid(np.maximum(cum_arr - cum_dep, 0), T) / max(total_boarded, 1)
+
+    return cum_dep, dispatch_log, mean_wait
 
 # =============================================================================
 # PLOTTING
@@ -122,6 +154,9 @@ def add_param_box(ax):
         ("  Queue trigger",   f">= {NT_CAPACITY_THRESHOLD:,} pax"),
         ("  Wait trigger",    f">= {NT_WAIT_THRESHOLD} min"),
         ("  Min headway",     f"{NT_MIN_HEADWAY} min"),
+        ("",                  ""),
+        ("Reference Plan",    ""),
+        ("  Headway",         f"{FIXED_HEADWAY} min"),
     ]
     text = "\n".join(f"{label:<18}{value}" for label, value in lines)
     ax.text(
@@ -132,37 +167,49 @@ def add_param_box(ax):
                   edgecolor="#cccccc", linewidth=0.8)
     )
 
-
-def plot_cumulative(cum_arr, cum_dep, dispatch_log, mean_wait, n_trains):
-    fig, ax = plt.subplots(figsize=(15, 6), facecolor="#ffffff")
-
-    ax.fill_between(T, cum_arr, cum_dep,
-                    where=(cum_arr >= cum_dep),
-                    color=COLOR_ARRIVAL, alpha=0.08)
-    ax.plot(T, cum_arr, color=COLOR_ARRIVAL,   lw=2,   label="A(t)  cumulative arrivals")
-    ax.step(T, cum_dep, color=COLOR_DEPARTURE, lw=2.5, label="D(t)  cumulative departures",
-            where="pre")
-
-    ylim_top = TOTAL_PASSENGERS * 1.05
-    for i, (td, _) in enumerate(dispatch_log):
-        ax.axvline(td, color=COLOR_TRAIN_LINE, lw=0.8, ls="--", alpha=0.6)
-        if i % 2 == 0 or i == len(dispatch_log) - 1:
-            ax.text(td + 0.5, ylim_top * 0.97, f"T{i+1}",
-                    fontsize=7, color="#888888", ha="left", va="top")
-            
-    # Callout: passengers left behind at end of service window
+def add_left_behind_callout(ax, cum_arr, cum_dep, color, x_frac, label):
     left_behind = int(round(cum_arr[-1] - cum_dep[-1]))
     if left_behind > 0:
-        y_arr = cum_arr[-1]
-        y_dep = cum_dep[-1]
-        x_callout = T_MAX * 0.97
+        y_arr     = cum_arr[-1]
+        y_dep     = cum_dep[-1]
+        x_callout = T_MAX * x_frac
         ax.annotate("", xy=(x_callout, y_dep), xytext=(x_callout, y_arr),
-                    arrowprops=dict(arrowstyle="<->", color="#cc3333", lw=1.5))
+                    arrowprops=dict(arrowstyle="<->", color=color, lw=1.5))
         ax.text(x_callout - 1, (y_arr + y_dep) / 2,
-                f"{left_behind:,} pax\nleft behind",
-                fontsize=8, color="#cc3333", ha="right", va="center",
+                f"{left_behind:,} pax\nleft behind\n({label})",
+                fontsize=8, color=color, ha="right", va="center",
                 bbox=dict(boxstyle="round,pad=0.3", facecolor="white",
-                          edgecolor="#cc3333", linewidth=0.8))
+                          edgecolor=color, linewidth=0.8))
+
+def plot_cumulative(cum_arr, cum_dep_nt, dispatch_log_nt, mean_wait_nt, n_trains_nt,
+                    cum_dep_fixed, dispatch_log_fixed, mean_wait_fixed):
+    fig, ax = plt.subplots(figsize=(15, 6), facecolor="#ffffff")
+
+    ylim_top = TOTAL_PASSENGERS * 1.05
+
+    # Shaded gaps
+    ax.fill_between(T, cum_arr, cum_dep_nt,
+                    where=(cum_arr >= cum_dep_nt),
+                    color=COLOR_NT, alpha=0.06)
+    ax.fill_between(T, cum_arr, cum_dep_fixed,
+                    where=(cum_arr >= cum_dep_fixed),
+                    color=COLOR_FIXED, alpha=0.06)
+
+    # Curves
+    ax.plot(T, cum_arr,       color=COLOR_ARRIVAL, lw=2,   label="A(t)  cumulative arrivals")
+    ax.step(T, cum_dep_nt,    color=COLOR_NT,      lw=2.5, label=f"D(t)  N(t) adaptive  (mean wait {mean_wait_nt:.1f} min)",    where="pre")
+    ax.step(T, cum_dep_fixed, color=COLOR_FIXED,   lw=1.8, label=f"D(t)  fixed {FIXED_HEADWAY}-min headway  (mean wait {mean_wait_fixed:.1f} min)", where="pre", ls="--")
+
+    # Train markers — N(t)
+    for i, (td, _) in enumerate(dispatch_log_nt):
+        ax.axvline(td, color=COLOR_NT, lw=0.6, ls="--", alpha=0.4)
+        if i % 2 == 0 or i == len(dispatch_log_nt) - 1:
+            ax.text(td + 0.5, ylim_top * 0.97, f"T{i+1}",
+                    fontsize=6.5, color=COLOR_NT, ha="left", va="top")
+
+    # Left-behind callouts — slightly offset so they don't overlap
+    add_left_behind_callout(ax, cum_arr, cum_dep_nt,    COLOR_NT,    0.91, "N(t)")
+    add_left_behind_callout(ax, cum_arr, cum_dep_fixed, COLOR_FIXED, 0.97, "fixed")
 
     ax.set_xlim(0, T_MAX)
     ax.set_ylim(0, ylim_top)
@@ -174,9 +221,8 @@ def plot_cumulative(cum_arr, cum_dep, dispatch_log, mean_wait, n_trains):
     ax.grid(True, ls=":", alpha=0.4)
     ax.set_title(
         f"Poisson arrivals (peak t={ARRIVAL_PEAK} min, σ={ARRIVAL_SIGMA} min)  ·  "
-        f"N(t) dispatch: queue≥{NT_CAPACITY_THRESHOLD} OR wait≥{NT_WAIT_THRESHOLD} min  ·  "
-        f"{n_trains} trains used\n"
-        f"mean wait ≈ {mean_wait:.1f} min (Little's Law)",
+        f"N(t): queue≥{NT_CAPACITY_THRESHOLD} OR wait≥{NT_WAIT_THRESHOLD} min  ({n_trains_nt} trains)  ·  "
+        f"Reference: fixed {FIXED_HEADWAY}-min headway ({NUM_TRAINS} trains)",
         fontsize=10, fontweight="bold"
     )
 
@@ -187,21 +233,26 @@ def plot_cumulative(cum_arr, cum_dep, dispatch_log, mean_wait, n_trains):
     print(f"Saved: {OUTPUT_CUMULATIVE}")
 
 
-def plot_queue_depth(cum_arr, cum_dep):
-    Q = np.maximum(cum_arr - cum_dep, 0)
+def plot_queue_depth(cum_arr, cum_dep_nt, cum_dep_fixed, mean_wait_nt, mean_wait_fixed):
+    Q_nt    = np.maximum(cum_arr - cum_dep_nt,    0)
+    Q_fixed = np.maximum(cum_arr - cum_dep_fixed, 0)
 
-    fig, ax = plt.subplots(figsize=(13, 5), facecolor="#ffffff")
-    ax.plot(T, Q, color=COLOR_DEPARTURE, lw=2, label="Q(t)  queue depth")
-    ax.fill_between(T, Q, alpha=0.10, color=COLOR_DEPARTURE)
+    fig, ax = plt.subplots(figsize=(15, 5), facecolor="#ffffff")
 
-    peak_idx = np.argmax(Q)
-    ax.annotate(
-        f"peak {Q[peak_idx]:.0f} pax @ t={T[peak_idx]:.0f} min",
-        xy=(T[peak_idx], Q[peak_idx]),
-        xytext=(T[peak_idx] + 12, Q[peak_idx] + 200),
-        fontsize=8, color=COLOR_DEPARTURE,
-        arrowprops=dict(arrowstyle="->", color=COLOR_DEPARTURE, lw=0.9)
-    )
+    ax.plot(T, Q_nt,    color=COLOR_NT,    lw=2,   label=f"N(t) adaptive  (mean wait {mean_wait_nt:.1f} min)")
+    ax.plot(T, Q_fixed, color=COLOR_FIXED, lw=1.8, label=f"Fixed {FIXED_HEADWAY}-min headway  (mean wait {mean_wait_fixed:.1f} min)", ls="--")
+    ax.fill_between(T, Q_nt,    alpha=0.08, color=COLOR_NT)
+    ax.fill_between(T, Q_fixed, alpha=0.08, color=COLOR_FIXED)
+
+    for Q, color, label in [(Q_nt, COLOR_NT, "N(t)"), (Q_fixed, COLOR_FIXED, "fixed")]:
+        peak_idx = np.argmax(Q)
+        ax.annotate(
+            f"{label} peak\n{Q[peak_idx]:.0f} pax @ t={T[peak_idx]:.0f} min",
+            xy=(T[peak_idx], Q[peak_idx]),
+            xytext=(T[peak_idx] + 10, Q[peak_idx] + 200),
+            fontsize=8, color=color,
+            arrowprops=dict(arrowstyle="->", color=color, lw=0.9)
+        )
 
     ax.set_xlim(0, T_MAX)
     ax.set_ylim(0)
@@ -211,7 +262,8 @@ def plot_queue_depth(cum_arr, cum_dep):
     ax.xaxis.set_major_locator(mticker.MultipleLocator(30))
     ax.legend(fontsize=9)
     ax.grid(True, ls=":", alpha=0.4)
-    ax.set_title("Queue Depth  Q(t) = A(t) − D(t)", fontsize=11, fontweight="bold")
+    ax.set_title("Queue Depth  Q(t) = A(t) − D(t)  |  N(t) vs Fixed-Headway",
+                 fontsize=11, fontweight="bold")
 
     plt.tight_layout()
     plt.savefig(OUTPUT_QUEUE_DEPTH, dpi=150, bbox_inches="tight")
@@ -223,6 +275,11 @@ def plot_queue_depth(cum_arr, cum_dep):
 # =============================================================================
 
 if __name__ == "__main__":
-    cum_arr, cum_dep, dispatch_log, mean_wait, n_trains = simulate()
-    plot_cumulative(cum_arr, cum_dep, dispatch_log, mean_wait, n_trains)
-    plot_queue_depth(cum_arr, cum_dep)
+    arrivals = draw_arrivals()
+
+    cum_arr, cum_dep_nt, log_nt, mw_nt, n_trains_nt = simulate_nt(arrivals)
+    cum_dep_fixed, log_fixed, mw_fixed               = simulate_fixed(arrivals)
+
+    plot_cumulative(cum_arr, cum_dep_nt, log_nt, mw_nt, n_trains_nt,
+                    cum_dep_fixed, log_fixed, mw_fixed)
+    plot_queue_depth(cum_arr, cum_dep_nt, cum_dep_fixed, mw_nt, mw_fixed)
