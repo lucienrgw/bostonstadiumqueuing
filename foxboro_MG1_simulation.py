@@ -14,7 +14,7 @@ from scipy.stats import norm
 # Service
 TRAIN_CAPACITY        = 1440   # passengers per train
 NUM_TRAINS            = 14     # maximum trains available
-FIRST_DEPARTURE       = 20     # minutes after whistle before first train can leave
+FIRST_DEPARTURE       = 30     # minutes after whistle before first train can leave
 
 # Arrival shape  (Poisson rate lambda(t) ~ Normal)
 ARRIVAL_PEAK      = 60     # minute at which fan arrival rate peaks
@@ -22,9 +22,9 @@ ARRIVAL_SIGMA     = 50     # spread (std dev) of the arrival surge in minutes
 ARRIVAL_QUIET_PERIOD  = 5      # minutes of near-zero arrivals right after whistle
 
 # N(t) dispatch policy
-NT_CAPACITY_THRESHOLD = 1000   # send a train if queue >= this many passengers
-NT_WAIT_THRESHOLD     = 25     # send a train if oldest passenger has waited >= this many minutes
-NT_MIN_HEADWAY        = 8      # minimum minutes between consecutive dispatches
+NT_CAPACITY_THRESHOLD = 1440   # send a train if queue >= this many passengers
+NT_WAIT_THRESHOLD     = 45     # send a train if oldest passenger has waited >= this many minutes
+NT_MIN_HEADWAY        = 4      # minimum minutes between consecutive dispatches
 
 # Fixed-headway reference (original plan)
 FIXED_HEADWAY         = 15     # minutes between trains in original plan
@@ -32,8 +32,8 @@ FIXED_HEADWAY         = 15     # minutes between trains in original plan
 # Simulation / plot
 RANDOM_SEED           = 42
 PLOT_BUFFER_MIN       = 40     # extra minutes plotted beyond last departure
-OUTPUT_CUMULATIVE     = "foxboro_cumulative_f.png"
-OUTPUT_QUEUE_DEPTH    = "foxboro_queue_depth_f.png"
+OUTPUT_CUMULATIVE     = "foxboro_cumulative_b.png"
+OUTPUT_QUEUE_DEPTH    = "foxboro_queue_depth_b.png"
 
 # Colors
 COLOR_ARRIVAL         = "#1a6bbd"
@@ -249,7 +249,7 @@ def plot_queue_depth(cum_arr, cum_dep_nt, cum_dep_fixed, mean_wait_nt, mean_wait
         ax.annotate(
             f"{label} peak\n{Q[peak_idx]:.0f} pax @ t={T[peak_idx]:.0f} min",
             xy=(T[peak_idx], Q[peak_idx]),
-            xytext=(T[peak_idx] + 10, Q[peak_idx] + 200),
+            xytext=(T[peak_idx] + 10, Q[peak_idx] - 120),
             fontsize=8, color=color,
             arrowprops=dict(arrowstyle="->", color=color, lw=0.9)
         )
