@@ -16,17 +16,38 @@ pip install matplotlib
 
 ## Using the py files
 
-To recreate the simpler cumulative plots, run foxborotosouthstation.py.
+To recreate the simpler cumulative plots, run foxboro_original_scenarios.py. foxborotosouthstation.py creates very similar plots but merged together in one image and without certain information callouts.
+
+To experiment with the N(t) model, run foxboro_MG1_simulation and adjust the parameters in the parameters section.
+
+## Interpreting the cumulative plots and queue depth charts
+
+The simpler deterministic plots all have the form "foxboro_original_scenario_[#].png". foxboro_cumulative_diagrams.png is a combined png of all three.
+
+The N(t) cumulative plots and queue depth charts referenced in the report are in pairs with the form:
+  "foxboro_cumulative_[identifier].png"
+  "foxboro_queue_depth_[identifier].png"
+
+The baseline N(t) plots have no identifier and are thus:
+  "foxboro_cumulative.png"
+  "foxboro_queue_depth.png"
+
+The rest of the plots were used to test different parameters as defined below:
+  
+  N1: high N value
+  
+  N2: low N value
+  
+  t1: low t value
+  
+  t2: high t value
+  
+  h1: low minimum headway
+  
+  h2: high minimum headway
+  
+  b: optimized parameters
+
+## Interpreting the cumulative plots and queue depth charts
 
 
-```train
-python train.py --input-data <path_to_data> --alpha 10 --beta 20
-```
-
->📋  Describe how to train the models, with example commands on how to train the models in your paper, including the full training procedure and appropriate hyperparameters.
-
-
-
-## Contributing
-
->📋  Pick a licence and describe how to contribute to your code repository. 
