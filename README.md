@@ -48,6 +48,7 @@ The rest of the plots were used to test different parameters as defined below:
   
   b: optimized parameters
 
-## Interpreting the cumulative plots and queue depth charts
+## License
 
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
